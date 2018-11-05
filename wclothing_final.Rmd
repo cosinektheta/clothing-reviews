@@ -1,0 +1,198 @@
+---
+title: "Mining the Women's Clothing Reviews"
+author: "cosinektheta"
+output:
+  html_document:
+    toc: yes
+---
+#Introduction 
+We will be analyzing the Women's E-Commerce Clothing Reviews and Ratings dataset, which can be found on the [Kaggle website](https://www.kaggle.com/nicapotato/womens-ecommerce-clothing-reviews). This dataset contains more than 23,000 online reviews of women's clothing from various retailers. As mentioned in the Overview section on the Kaggle website, the dataset contains the following variables:
+
+* Clothing ID
+* Age (of the reviewer)
+* Title (of review)
+* Review
+* Rating (out of 5-stars)
+* Recommendation index (i.e. whether customer would recommend this product to others: yes= 1/no = 0 )
+* Positive Feedback Count (the number of readers who found the review useful)
+* Division name (e.g. General Petite, Intimates)
+* Department name (e.g. Jackets, Tops, Bottoms)
+* Class name (e.g. Blouses, Pants, Skirts, Swim, Knits)
+
+#Exploratory Data Analysis
+Let's first load in the data to see what we're working with. 
+
+```{r message = F, warning = F, echo = F}
+library(tidyverse)
+library(tidytext)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(igraph)
+library(ggplot2)
+library(wordcloud2)
+library(ggraph)
+library(topicmodels)
+```
+
+Here, I removed the first column that specified the row number and I renamed the columns.
+
+```{r clothes, message = F, warning = F}
+clothes <- read_csv('wclothing.csv')
+clothes <- clothes[-1]
+colnames(clothes) <- c('ID', 'Age', 'Title', 'Review', 'Rating', 'Recommend', 'Liked', 'Division', 'Dept', 'Class')
+```
+
+Let's look at the structure.
+
+```{r summary, warning = F}
+str(clothes)
+unlist(purrr::map(purrr::map(clothes, is.na), sum))
+```
+
+The dataset contains 23,486 entries pertaining to the age and review given by the customer and their opinions on the specific clothes purchased. There are columns of either integer or character types. All the integer columns have values and the character columns contain some NAs with Title having the most NAs.
+
+I will be using the techniques I have learned from Julia Silge's Text Mining with R to analyze this dataset.
+
+I'd like to see which Department gets however much percentage of the reviews/ratings.
+
+```{r Dept distribution, message = F, warning = F}
+ggplot(data.frame(prop.table(table(clothes$Dept))), aes(x=Var1, y = Freq*100)) + geom_bar(stat = 'identity') + xlab('Department Name') + ylab('Percentage of Reviews/Ratings (%)') + geom_text(aes(label=round(Freq*100,2)), vjust=-0.25) + ggtitle('Percentage of Reviews By Department')
+```
+
+**Tops have the highest percentage of reviews and ratings in this dataset**, followed by dresses. Items in the Jackets and Trend department received the fewest reviews. 
+
+
+## Ratings by Department
+I will be excluding 'Trend' as it contains a mix of clothes that can fit in the other categories of Dept. They also represent 119/23486 = 0.51% of the dataset so I don't expect a large effect on the data analysis. I will focus on 5 departments: Bottoms, Dresses, Intimate, Jackets, and Tops. Now, most of the reviews/ratings are for Tops and the least, for Jackets.
+
+Let's look at the distribution of ratings within each department. 
+
+```{r bydept, message = F, warning = F}
+#ratings percentage by Department
+phisto <- clothes %>% filter(!is.na(Dept), Dept != 'Trend') %>% mutate(Dept = factor(Dept)) %>% group_by(Dept) %>% count(Rating) %>% mutate(perc = n/sum(n))
+phisto %>% ggplot(aes(x=Rating, y = perc*100, fill = Dept)) + geom_bar(stat = 'identity', show.legend = FALSE) + facet_wrap(~Dept) + ylab('Percentage of reviews (%)') + geom_text(aes(label=round(perc*100,2)), vjust = -.2) + scale_y_continuous(limits = c(0,65)) 
+```
+
+In each Department, the dominant rating given is 5-stars. **Jacket has the highest number of 5-star ratings within its department**. The Jacket department also had to fewest number of reviews which could mean that if the number of ratings/reviews were to increase, there may not be as big of a gap between 5-star and other-star reviews. As far as I can tell, jackets may be a good investment as consumers seem to give more 5-star reviews. My speculation: The fit of the apparel may have something to do with this. Dresses and tops tend to be tricky, especially to purchase online, as body shape varies from person to person. What looks great on one person may feel too tight on the other. The jackets may use flexible material or the customer may only require a loose fit. There may be fewer ways for jackets to go wrong than for tops and dresses.
+
+
+## Departments by Age
+Let's look at the popularity of each department by age. I grouped the age into categories (18-29, 30-39, 40-49, etc.)
+
+```{r age, message = F, warning = F}
+#facet wrap by age and look at Dept distribution in each
+ages <- clothes %>% filter(!is.na(Age), !is.na(Dept), Dept != 'Trend') %>% select(ID, Age, Dept) %>% mutate(Age_group = ifelse(Age < 30, '18-29', ifelse(Age < 40, '30-39', ifelse(Age < 50, '40-49', ifelse(Age < 60, '50-59', ifelse(Age < 70, '60-69', ifelse(Age < 80, '70-79', ifelse(Age < 90, '80-89', '90-99')))))))) 
+
+ages <- ages %>% mutate(Age_group = factor(Age_group), Dept = factor(Dept, levels = rev(c('Tops', 'Dresses', 'Bottoms', 'Intimate', 'Jackets'))))
+
+ages %>% filter(Age < 80) %>% group_by(Age_group) %>% count(Dept) %>% ggplot(aes(Dept, n, fill = Age_group)) + geom_bar(stat='identity', show.legend = FALSE) + facet_wrap(~Age_group, scales = 'free') + xlab('Department') + ylab('Number of Reviews') + geom_text(aes(label = n), hjust = 1) + scale_y_continuous(expand = c(.1, 0)) + coord_flip() 
+```
+
+The distribution of number of reviews by Department (i.e. Tops with the highest number of reviews, dresses with the second highest, etc.) are maintained within each of the age groups shown. **People in their 30's left the most reviews, followed by people in their 40's and 50's.** This gives companies an idea for who the target demographic is and for what kind of clothing types (tops, dresses) are in demand.
+
+The 80-89 and 90-99 age groups, however, show a different distribution. Some of the reviewers may not be writing their proper age, but that's just my speculation. 
+
+```{r 80andover, message = F, warning = F}
+ages %>% filter(Age >= 80) %>% group_by(Age_group) %>% count(Dept) %>% ggplot(aes(Dept, n, fill = Age_group)) + geom_bar(stat='identity', show.legend = FALSE) + facet_wrap(~Age_group, scales = 'free') + xlab('Department') + ylab('Number of Reviews') + geom_text(aes(label = n), hjust = 1.2) + coord_flip()
+
+```
+
+# Bigram Analysis and Visualization 
+To do a bigram analysis, I removed the entries that have no reviews. There were 845 NA reviews so 845/23486 * 100 = 3.6 % ratings are not going to be taken into account. I also combined the title with the review to get all the words into one section.
+
+```{r rbinding for review analysis}
+clothesr <- clothes %>% filter(!is.na(Review))
+notitle <- clothesr %>% filter(is.na(Title)) %>% select(-Title)
+wtitle <- clothesr %>% filter(!is.na(Title)) %>% unite(Review, c(Title, Review), sep = ' ')
+
+main <- bind_rows(notitle, wtitle)
+```
+
+I then sorted out the stop words and removed any digits. 
+
+```{r bigramming function, echo=F}
+bigramming <- function(data){
+  cbigram <- data %>% unnest_tokens(bigram, Review, token = 'ngrams', n = 2)
+  cbigram_sep <- cbigram %>% separate(bigram, c('first', 'second'), sep = ' ')
+  cbigram2 <- cbigram_sep %>% filter(!first %in% stop_words$word, !second %in% stop_words$word, !str_detect(first,      '\\d'), !str_detect(second, '\\d')) %>% unite(bigram, c(first, second), sep = ' ') 
+  return(cbigram2)
+}
+```
+
+I grouped the words according to their Ratings and plotted the 10 most common bigrams for each rating. 
+
+```{r bigram}
+top_bigrams <- bigramming(main) %>% mutate(Rating = factor(Rating, levels <- c(5:1))) %>% mutate(bigram = factor(bigram, levels = rev(unique(bigram)))) %>% group_by(Rating) %>% count(bigram, sort=TRUE) %>% top_n(10, n) %>% ungroup() 
+
+top_bigrams  %>% ggplot(aes(bigram, n, fill = Rating)) + geom_col(show.legend = FALSE) + facet_wrap(~Rating, ncol = 3, scales = 'free') + labs(x=NULL, y = 'frequency') + ggtitle('Most Common Bigrams (By Ratings)') + coord_flip()
+```
+
+It goes without saying that there are positive phrases for the higher ratings and negative phrases for the lower ratings. 'Love love' is the most mentioned bigram. The phrase 'arm holes' show up in 2,3-star reviews, which could refer to a lack of fit. Let's focus on the 5-star reviews and the 1-star reviews to analyze what was good or bad about the clothing items.
+
+```{r rating highest/lowest bigram analysis}
+fivestar <- main %>% filter(Rating == 5)
+onestar <- main %>% filter(Rating == 1)
+fivebi <- bigramming(fivestar) %>% count(bigram, sort = TRUE)
+onebi <- bigramming(onestar) %>% count(bigram, sort = TRUE)
+```
+
+##Network Visualization
+First, let's do a network visualization of the 5-star reviews. To do so, we will use the `igraph` and `ggraph` libraries to show a network that highlights the shared words within the most common bigrams.
+
+>**Network of Popular Bigrams of 5-star Reviews**
+
+```{r igraph, message = F, warning = F, echo=F}
+five_graph <- fivebi %>% separate(bigram, c('first','second'), sep = ' ') %>% filter(n > 75) %>% graph_from_data_frame()
+one_graph <- onebi %>% separate(bigram, c('first','second'), sep = ' ') %>% filter(n > 5) %>% graph_from_data_frame()
+
+set.seed(55555)
+ggraph(five_graph, layout = "fr") +
+  geom_edge_link() +
+  geom_node_point(color = 'orangered1', size = 3) +
+  geom_node_text(aes(label = name), vjust = 1.1, hjust = 1.1) + scale_x_continuous(limits = c(2, 18)) + theme_void()
+```
+
+The visual shows that shared words include 'beautiful', 'super', 'fit(s)', 'size', and 'perfect'. The most commonly mentioned sizes are petite, regular/normal, and medium. **The comfort, fit, and the look of the clothing items are what's focused on in these 5-star reviews.**
+
+##WordCloud Visualization 
+
+>**Word Cloud of 1-star Reviews**
+
+```{r wordcloud1star, warning = F, message = F, echo = F}
+wordcloud2(onebi %>% filter(n>5) %>% mutate(n = sqrt(n)), size = .4)
+```
+
+In 1-star ratings, the most common bigram was by far 'poor quality'. 'Cold water' is another common bigram which could refer to the way the clothing item was washed. Since the quality of the clothing might change depending on how it is cleaned, the lack of durability may lead to the 1-star rating. 
+
+The word 'fit' shows up with adjectives such as 'weird', 'odd', and 'horrible'. Bigrams such as 'feels cheap', 'bad quality', and 'potato sack' (ouch) sum up why the clothes purchased were not to the customer's satisfaction. **The quality of the fabric and the fit on the customer as well as difficulties in washing the material seem to be the main reasons for the 1-star rating.**
+
+#Latent Dirchlet Allocation (LDA) on Trend reviews
+
+Let's go back to the 118 reviews in the Trend Department that we had disregarded. We use the topic modelling approach of Latent Dirchlet Allocation (LDA) to get a sense of the key characteristics of these reviews. We fit an LDA model using Gibbs sampling. I picked k = 5 for the 5 departments of Bottoms, Dresses, Intimate, Jackets, and Tops. The top 5 words for each topic is shown.
+
+```{r ldatrend}
+trend_count <- main %>% filter(Dept == 'Trend') %>% unnest_tokens(word, Review) %>% anti_join(stop_words, by = 'word') %>% filter(!str_detect(word, '\\d')) %>% count(ID, word, sort = TRUE) %>% ungroup()
+
+trend_dtm <- trend_count %>% cast_dtm(ID, word, n)
+trendy <- tidy(LDA(trend_dtm, k = 5, method = 'GIBBS', control = list(seed = 4444, alpha = 1)), matrix = 'beta')
+top_trendy <- trendy %>% group_by(topic) %>% top_n(5, beta) %>% ungroup() %>% arrange(topic, desc(beta))
+```
+
+```{r ldatrendplot, warning = F, message = F}
+top_trendy %>% mutate(term = reorder(term, beta)) %>%   ggplot(aes(term, beta, fill = factor(topic))) + geom_col(show.legend = FALSE) +   facet_wrap(~ topic, scales = "free") + ggtitle('LDA Analysis (k = 5)') + coord_flip()
+```
+
+**Interestingly enough, skirt and jeans, jacket, top, and dress (Topic 2-5) all got separated into different topics.** That's similar to the structure of the departments (Bottoms, Jackets, Tops, and Dresses). So LDA was able to find this structure without any knowledge of the reviews belonging to specific departments. Words associated with the Intimates section (e.g. bra, chemise) did not show up and could imply underwears aren't often showcased in the Trend department. Topic 1 consisted of words 'love', 'fabric', 'wear', 'fit', and 'length': these words can describe what customers loved (or didn't love) about the product. The other words in each of the topics can inform me what words are grouped together with top or dress or skirt or jacket.
+
+I think LDA would be useful in situations when you have unmarked reviews that have some inherent structure. In our case, the Trend department had a mixture of clothes from all the other departments. Without reading all of the reviews, I can use LDA to get a sense of the data. From this analysis I can see that the reviews focus on dress, tops, and skirts as well as jacket and jeans as well as words that are grouped with them.
+
+#Conclusion
+The key takeaways from the above analysis of *this* dataset are:
+
+* 5-star reviews are dominant in each department with jackets having the highest proportion within its department
+* Customers in their 30's and 40's leave the most reviews. 
+* Fit, comfortability/quality of the material, aesthetics of the clothing item influence the rating
+* Arm holes can be a problem 
+
+By performing exploratory data analysis and bigram analysis, companies can focus on what works and what doesn't. Knowing the demographics of the reviewers can inform marketing decisions (e.g. online advertisements on sites most accessed by 30 and 40 year olds).  Selecting items that have flexible and comfortable fabric can lead to higher customer satisfaction. A higher number of positive reviews become a form of advertisement and can lead to higher sales.
